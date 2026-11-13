@@ -1628,6 +1628,76 @@ bool CAPSTONE_API cs_disasm_iter(csh ud, const uint8_t **code, size_t *size,
 	return true;
 }
 
+// transactional "single-stepping": like cs_disasm_iter(), but a failed
+// attempt commits nothing - neither the cursor nor @insn are modified.
+CAPSTONE_EXPORT
+bool CAPSTONE_API cs_disasm_try(csh ud, const uint8_t **code, size_t *size,
+				uint64_t *address, cs_insn *insn)
+{
+	struct cs_struct *handle;
+	cs_insn tmp;
+	cs_detail *detail = NULL;
+	const uint8_t *tmp_code;
+	size_t tmp_size;
+	uint64_t tmp_address;
+	bool r;
+
+	handle = (struct cs_struct *)(uintptr_t)ud;
+	if (!handle || !insn || !code || !size || !address) {
+		return false;
+	}
+
+	handle->errnum = CS_ERR_OK;
+
+	if (*size == 0)
+		return false;
+
+	// decode into scratch storage, so a broken instruction cannot
+	// clobber the last confirmed instruction in @insn
+	if (handle->detail_opt) {
+		detail = cs_mem_calloc(1, sizeof(cs_detail));
+		if (!detail) {
+			// insufficient memory
+			handle->errnum = CS_ERR_MEM;
+			return false;
+		}
+	}
+	tmp.detail = detail;
+
+	tmp_code = *code;
+	tmp_size = *size;
+	tmp_address = *address;
+
+	r = cs_disasm_iter(ud, &tmp_code, &tmp_size, &tmp_address, &tmp);
+	if (!r) {
+		cs_mem_free(detail);
+		return false;
+	}
+
+	// the attempt succeeded: commit cursor, address and instruction
+	if (handle->detail_opt) {
+		if (insn->detail) {
+			memcpy(insn->detail, detail, sizeof(cs_detail));
+			cs_mem_free(detail);
+		} else {
+			// CS_OPT_DETAIL was turned on after cs_malloc()
+			insn->detail = detail;
+		}
+	} else if (insn->detail) {
+		// details are disabled: drop the stale buffer
+		cs_mem_free(insn->detail);
+		insn->detail = NULL;
+	}
+	tmp.detail = insn->detail;
+	*insn = tmp;
+
+	*code = tmp_code;
+	*size = tmp_size;
+	*address = tmp_address;
+
+	return true;
+}
+
 // return friendly name of register in a string
 CAPSTONE_EXPORT
 const char *CAPSTONE_API cs_reg_name(csh ud, unsigned int reg)

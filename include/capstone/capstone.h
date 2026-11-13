@@ -948,6 +948,47 @@ bool CAPSTONE_API cs_disasm_iter(csh handle, const uint8_t **code, size_t *size,
 				 uint64_t *address, cs_insn *insn);
 
 /**
+ Transactional API to disassemble a single instruction, given the code
+ buffer, size and address.
+ Like cs_disasm_iter(), this API decodes one instruction into @insn, but it
+ only commits its result on success: if the instruction is truncated or
+ invalid (and no SKIPDATA fallback applies), this API returns false and
+ leaves @code, @size, @address and @insn - including the details of the last
+ successfully decoded instruction - untouched.
+
+ This makes the API suitable for repeatedly probing untrusted input: a failed
+ attempt never disturbs the state confirmed by earlier successful calls, so
+ decoding can simply be retried at another position.
+
+ NOTE 1: on success this API updates @code, @size & @address to point to the
+ next instruction in the input buffer, exactly like cs_disasm_iter().
+
+ NOTE 2: the cache in @insn can be created with cs_malloc() API. Unlike
+ cs_disasm_iter(), this API manages @insn->detail itself according to the
+ current CS_OPT_DETAIL option: it allocates the detail buffer on demand if
+ CS_OPT_DETAIL was turned on after cs_malloc(), and releases it again when
+ details are disabled. The detail buffer is only updated on success.
+
+ NOTE 3: the CS_OPT_SKIPDATA option is honored like in cs_disasm(): broken
+ bytes are reported as a "data" instruction and the cursor advances by the
+ skipdata size. A "data" instruction counts as a successful decode.
+
+ @handle: handle returned by cs_open()
+ @code: buffer containing raw binary code to be disassembled
+ @size: size of above code
+ @address: address of the first insn in given raw code buffer
+ @insn: pointer to instruction to be filled in by this API.
+
+ @return: true if this API successfully decoded 1 instruction,
+ or false otherwise (in which case none of the arguments were modified).
+
+ On failure, call cs_errno() for error code.
+*/
+CAPSTONE_EXPORT
+bool CAPSTONE_API cs_disasm_try(csh handle, const uint8_t **code, size_t *size,
+				uint64_t *address, cs_insn *insn);
+
+/**
  Return friendly name of register in a string.
  Find the instruction id from header file of corresponding architecture (arm.h for ARM,
  x86.h for X86, ...)
