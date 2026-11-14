@@ -800,6 +800,33 @@ const char *CAPSTONE_API cs_strerror(cs_err code)
 	}
 }
 
+// Release every resource owned by a handle. Also used for handles which
+// cs_open() only partially initialized.
+static void free_handle(struct cs_struct *ud)
+{
+	struct insn_mnem *next = NULL, *tmp = NULL;
+
+	if (!ud)
+		return;
+
+	if (ud->printer_info)
+		cs_mem_free(ud->printer_info);
+
+	// free the linked list of customized mnemonic
+	tmp = ud->mnem_list;
+	while (tmp) {
+		next = tmp->next;
+		cs_mem_free(tmp);
+		tmp = next;
+	}
+
+	cs_mem_free(ud->insn_cache);
+	cs_mem_free(ud->x86_insn_lut);
+	cs_mem_free(ud->x86_insn_reg_lut);
+
+	cs_mem_free(ud);
+}
+
 CAPSTONE_EXPORT
 cs_err CAPSTONE_API cs_open(cs_arch arch, cs_mode mode, csh *handle)
 {
@@ -851,7 +878,9 @@ cs_err CAPSTONE_API cs_open(cs_arch arch, cs_mode mode, csh *handle)
 
 fail:
 	if (ud) {
-		cs_mem_free(ud);
+		// arch_init() may have filled in fields before it failed, so tear
+		// the handle down through the same path as cs_close().
+		free_handle(ud);
 	}
 	*handle = 0;
 	return err;
@@ -861,31 +890,14 @@ CAPSTONE_EXPORT
 cs_err CAPSTONE_API cs_close(csh *handle)
 {
 	struct cs_struct *ud = NULL;
-	struct insn_mnem *next = NULL, *tmp = NULL;
 
-	if (*handle == 0)
+	if (!handle || *handle == 0)
 		// invalid handle
 		return CS_ERR_CSH;
 
 	ud = (struct cs_struct *)(*handle);
 
-	if (ud->printer_info)
-		cs_mem_free(ud->printer_info);
-
-	// free the linked list of customized mnemonic
-	tmp = ud->mnem_list;
-	while (tmp) {
-		next = tmp->next;
-		cs_mem_free(tmp);
-		tmp = next;
-	}
-
-	cs_mem_free(ud->insn_cache);
-	cs_mem_free(ud->x86_insn_lut);
-	cs_mem_free(ud->x86_insn_reg_lut);
-
-	memset(ud, 0, sizeof(*ud));
-	cs_mem_free(ud);
+	free_handle(ud);
 
 	// invalidate this handle by ZERO out its value.
 	// this is to make sure it is unusable after cs_close()
@@ -1267,6 +1279,10 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 	const uint8_t *buffer_org;
 	unsigned int cache_size = INSN_CACHE_SIZE;
 	size_t next_offset;
+	// Detail owned by the instruction which is currently decoded. It is not
+	// part of the committed instructions yet, so the rollback path has to
+	// free it separately.
+	cs_detail *pending_detail = NULL;
 
 	handle = (struct cs_struct *)(uintptr_t)ud;
 	if (!handle) {
@@ -1276,6 +1292,7 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 	}
 
 	handle->errnum = CS_ERR_OK;
+	*insn = NULL;
 
 #ifdef CAPSTONE_USE_SYS_DYN_MEM
 	if (count > 0 && count <= INSN_CACHE_SIZE)
@@ -1309,16 +1326,10 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 			insn_cache->detail =
 				cs_mem_calloc(1, sizeof(cs_detail));
 			if (!insn_cache->detail) {
-				insn_cache = (cs_insn *)total;
-				for (i = 0; i < c; i++, insn_cache++)
-					cs_mem_free(insn_cache->detail);
-
-				cs_mem_free(total);
-				*insn = NULL;
-
 				handle->errnum = CS_ERR_MEM;
-				return 0;
+				goto fail;
 			}
+			pending_detail = insn_cache->detail;
 		} else {
 			insn_cache->detail = NULL;
 		}
@@ -1334,6 +1345,11 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 
 		r = handle->disasm(ud, buffer, size, &mci, &insn_size, offset,
 				   handle->getinsn_info);
+		if (handle->errnum == CS_ERR_MEM)
+			// The failure was an allocation failure, not a decode
+			// failure. It must not be reported as skipped data.
+			goto fail;
+
 		if (r) {
 			SStream ss;
 			SStream_Init(&ss);
@@ -1346,6 +1362,9 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 
 			SStream_opt_unum(&ss, handle->imm_unsigned);
 			handle->printer(&mci, &ss, handle->printer_info);
+			if (handle->errnum == CS_ERR_MEM)
+				goto fail;
+
 			fill_insn(handle, insn_cache, &ss, &mci,
 				  handle->post_printer, buffer);
 
@@ -1362,6 +1381,8 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 			if (handle->detail_opt) {
 				cs_mem_free(insn_cache->detail);
 			}
+			insn_cache->detail = NULL;
+			pending_detail = NULL;
 
 			// if there is no request to skip data, or remaining data is too small,
 			// then bail out
@@ -1406,6 +1427,10 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 			next_offset = skipdata_bytes;
 		}
 
+		// The instruction is complete and owned by the output cache from
+		// here on.
+		pending_detail = NULL;
+
 		// one more instruction entering the cache
 		f++;
 
@@ -1422,16 +1447,8 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 			total_size += (sizeof(cs_insn) * cache_size);
 			tmp = cs_mem_realloc(total, total_size);
 			if (tmp == NULL) { // insufficient memory
-				if (handle->detail_opt) {
-					insn_cache = (cs_insn *)total;
-					for (i = 0; i < c; i++, insn_cache++)
-						cs_mem_free(insn_cache->detail);
-				}
-
-				cs_mem_free(total);
-				*insn = NULL;
 				handle->errnum = CS_ERR_MEM;
-				return 0;
+				goto fail;
 			}
 			// Zero reallocated memory to prevent
 			// access to uninitialized memory down the line.
@@ -1463,18 +1480,8 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 				     total_size - (cache_size - f) *
 							  sizeof(*insn_cache));
 		if (tmp == NULL) { // insufficient memory
-			// free all detail pointers
-			if (handle->detail_opt) {
-				insn_cache = (cs_insn *)total;
-				for (i = 0; i < c; i++, insn_cache++)
-					cs_mem_free(insn_cache->detail);
-			}
-
-			cs_mem_free(total);
-			*insn = NULL;
-
 			handle->errnum = CS_ERR_MEM;
-			return 0;
+			goto fail;
 		}
 
 		total = tmp;
@@ -1483,6 +1490,20 @@ size_t CAPSTONE_API cs_disasm(csh ud, const uint8_t *buffer, size_t size,
 	*insn = total;
 
 	return c;
+
+fail:
+	// Release everything allocated for the instructions collected so far.
+	// The caller gets no array back, so it must not call cs_free().
+	cs_mem_free(pending_detail);
+	if (handle->detail_opt) {
+		insn_cache = (cs_insn *)total;
+		for (i = 0; i < c; i++, insn_cache++)
+			cs_mem_free(insn_cache->detail);
+	}
+	cs_mem_free(total);
+	*insn = NULL;
+
+	return 0;
 }
 
 CAPSTONE_EXPORT
@@ -1503,6 +1524,8 @@ cs_insn *CAPSTONE_API cs_malloc(csh ud)
 {
 	cs_insn *insn;
 	struct cs_struct *handle = (struct cs_struct *)(uintptr_t)ud;
+
+	handle->errnum = CS_ERR_OK;
 
 	insn = cs_mem_malloc(sizeof(cs_insn));
 	if (!insn) {
@@ -1562,6 +1585,10 @@ bool CAPSTONE_API cs_disasm_iter(csh ud, const uint8_t **code, size_t *size,
 
 	r = handle->disasm(ud, *code, *size, &mci, &insn_size, *address,
 			   handle->getinsn_info);
+	if (handle->errnum == CS_ERR_MEM)
+		// Allocation failure: not a decode failure of this input.
+		return false;
+
 	if (r) {
 		SStream ss;
 		SStream_Init(&ss);
@@ -1573,6 +1600,8 @@ bool CAPSTONE_API cs_disasm_iter(csh ud, const uint8_t **code, size_t *size,
 
 		SStream_opt_unum(&ss, handle->imm_unsigned);
 		handle->printer(&mci, &ss, handle->printer_info);
+		if (handle->errnum == CS_ERR_MEM)
+			return false;
 
 		fill_insn(handle, insn, &ss, &mci, handle->post_printer, *code);
 

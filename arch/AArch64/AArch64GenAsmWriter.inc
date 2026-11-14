@@ -34574,6 +34574,10 @@ static bool printAliasInstr(MCInst *MI, uint64_t Address, SStream *OS) {
     ++I;
   SStream_concat1(OS, '\t');
   char *substr = cs_mem_malloc(I + 1);
+  if (!substr) {
+    cs_mem_error_on(MI);
+    return false;
+  }
   memcpy(substr, AsmString, I);
   substr[I] = '\0';
   SStream_concat0(OS, substr);

@@ -971,10 +971,16 @@ DEFINE_printMatrix(0);
 \
 		unsigned buf_len = strlen(RegName) + 1; \
 		char *Base = cs_mem_calloc(1, buf_len); \
+		if (!Base) { \
+			/* Leave errnum at CS_ERR_MEM for cs_disasm(). */ \
+			cs_mem_error_on(MI); \
+			return; \
+		} \
 		memcpy(Base, RegName, buf_len); \
 		char *Dot = strchr(Base, '.'); \
 		if (!Dot) { \
 			SStream_concat0(O, RegName); \
+			cs_mem_free(Base); \
 			return; \
 		} \
 		*Dot = '\0'; /* Split string */ \

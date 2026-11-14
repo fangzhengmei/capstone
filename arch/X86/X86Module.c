@@ -42,9 +42,7 @@ cs_err X86_global_init(cs_struct *ud)
 	else
 		ud->regsize_map = regsize_map_32;
 
-	X86_build_lookup_tables(ud);
-
-	return CS_ERR_OK;
+	return X86_build_lookup_tables(ud);
 }
 
 cs_err X86_option(cs_struct *handle, cs_opt_type type, size_t value)

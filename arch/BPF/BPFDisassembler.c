@@ -16,15 +16,18 @@
 #include "../../utils.h"
 
 ///< Malloc bpf_internal, also checks if code_len is large enough.
-static bpf_internal *alloc_bpf_internal(const size_t code_len)
+static bpf_internal *alloc_bpf_internal(const size_t code_len, MCInst *instr)
 {
 	bpf_internal *bpf;
 
 	if (code_len < 8)
 		return NULL;
 	bpf = cs_mem_malloc(sizeof(bpf_internal));
-	if (bpf == NULL)
+	if (bpf == NULL) {
+		// Tell the caller apart from a code_len which is too small.
+		cs_mem_error(instr->csh);
 		return NULL;
+	}
 	/* default value */
 	bpf->insn_size = 8;
 	return bpf;
@@ -36,7 +39,7 @@ static bpf_internal *fetch_cbpf(MCInst *instr, const uint8_t *code,
 {
 	bpf_internal *bpf;
 
-	bpf = alloc_bpf_internal(code_len);
+	bpf = alloc_bpf_internal(code_len, instr);
 	if (bpf == NULL)
 		return NULL;
 
@@ -53,7 +56,7 @@ static bpf_internal *fetch_ebpf(MCInst *instr, const uint8_t *code,
 {
 	bpf_internal *bpf;
 
-	bpf = alloc_bpf_internal(code_len);
+	bpf = alloc_bpf_internal(code_len, instr);
 	if (bpf == NULL)
 		return NULL;
 

@@ -1,0 +1,19 @@
+# printAliasInstr() copies the mnemonic into a heap buffer and used it
+# without checking the allocation. A failed cs_mem_malloc() made memcpy()
+# write through NULL. Bail out instead and record CS_ERR_MEM on the handle
+# so cs_disasm() reports the allocator error rather than a decode failure.
+diff --git a/arch/PowerPC/PPCGenAsmWriter.inc b/arch/PowerPC/PPCGenAsmWriter.inc
+index bc66ca1..8082f0c 100644
+--- a/arch/PowerPC/PPCGenAsmWriter.inc
++++ b/arch/PowerPC/PPCGenAsmWriter.inc
+@@ -16567,6 +16567,10 @@ static bool printAliasInstr(MCInst *MI, uint64_t Address, SStream *OS) {
+     ++I;
+   SStream_concat1(OS, '\t');
+   char *substr = cs_mem_malloc(I + 1);
++  if (!substr) {
++    cs_mem_error_on(MI);
++    return false;
++  }
+   memcpy(substr, AsmString, I);
+   substr[I] = '\0';
+   SStream_concat0(OS, substr);

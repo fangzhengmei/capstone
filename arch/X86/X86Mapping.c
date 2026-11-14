@@ -1791,19 +1791,20 @@ static int binary_search2(const struct insn_reg2 *insns, unsigned int max,
 	return -1;
 }
 
-void X86_build_lookup_tables(cs_struct *h)
+cs_err X86_build_lookup_tables(cs_struct *h)
 {
 	unsigned int i;
 	unsigned int max = ARR_SIZE(insns);
 	unsigned int id_max;
 
-	CS_ASSERT_RET(h && !h->x86_insn_lut);
+	CS_ASSERT_RET_VAL(h && !h->x86_insn_lut, CS_ERR_OPTION);
 
 	id_max = insns[max - 1].id;
 	h->x86_insn_lut_max = id_max;
 	h->x86_insn_lut =
 		(uint16_t *)cs_mem_malloc((id_max + 1) * sizeof(uint16_t));
-	CS_ASSERT_RET(h->x86_insn_lut);
+	if (!h->x86_insn_lut)
+		return CS_ERR_MEM;
 
 	memset(h->x86_insn_lut, 0xff, (id_max + 1) * sizeof(uint16_t));
 	for (i = 0; i < max; i++)
@@ -1812,7 +1813,7 @@ void X86_build_lookup_tables(cs_struct *h)
 	h->x86_insn_reg_lut =
 		(uint32_t *)cs_mem_calloc(id_max + 1, sizeof(uint32_t));
 	if (!h->x86_insn_reg_lut)
-		return;
+		return CS_ERR_MEM;
 
 	for (i = 0; i < ARR_SIZE(insn_regs_intel); i++) {
 		unsigned int insn_id = insn_regs_intel[i].insn;
@@ -1854,6 +1855,8 @@ void X86_build_lookup_tables(cs_struct *h)
 					 insn_regs_att_extra[i].access)
 				 << 16);
 	}
+
+	return CS_ERR_OK;
 }
 
 // return register of given instruction id

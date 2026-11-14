@@ -147,6 +147,25 @@ static inline bool cs_mem_is_setup()
 	       cs_mem_free && cs_vsnprintf;
 }
 
+/// Records an allocation failure on the handle.
+/// Decoders and printers cannot return an error code of their own, so they
+/// use this to tell cs_disasm()/cs_disasm_iter() that a failure is not a
+/// property of the input but of the allocator.
+static inline void cs_mem_error(cs_struct *handle)
+{
+	if (handle)
+		handle->errnum = CS_ERR_MEM;
+}
+
+/// Reports an allocation failure to the handle owning @MI and returns false.
+/// Printers have no error return value, so they use this result instead of
+/// continuing with a partially printed instruction.
+static inline bool cs_mem_error_on(const MCInst *MI)
+{
+	cs_mem_error(MI ? MI->csh : NULL);
+	return false;
+}
+
 /// Capstone assert macros. They can be configured to print warnings
 /// when the `expr` is false.
 /// This can be enabled by defining CAPSTONE_ASSERTION_WARNINGS.
